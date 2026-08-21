@@ -230,6 +230,24 @@ export default function Result() {
                   {q.text}
                 </div>
 
+                {/* Question Diagram / Image */}
+                {q.imageUrl && (
+                  <div style={{ margin: "1em 0 1.4em 0", textAlign: "center" }}>
+                    <div style={{ display: "inline-block", background: "var(--paper-100)", padding: "8px", borderRadius: "var(--radius-md)", border: "1px solid var(--line)" }}>
+                      <img
+                        src={q.imageUrl}
+                        alt={q.imageCaption || "Question Diagram"}
+                        style={{ maxWidth: "100%", maxHeight: "300px", objectFit: "contain", borderRadius: "var(--radius-sm)", display: "block" }}
+                      />
+                      {q.imageCaption && (
+                        <div style={{ fontSize: "0.82rem", color: "var(--ink-500)", fontStyle: "italic", marginTop: "6px" }}>
+                          {q.imageCaption}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* MCQ Options Breakdown */}
                 {q.type === "MCQ" && q.choices && (
                   <div style={{ display: "grid", gap: "0.65em", marginBottom: "1.3em" }}>

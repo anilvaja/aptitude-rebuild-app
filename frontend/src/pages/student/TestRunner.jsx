@@ -148,6 +148,23 @@ export default function TestRunner() {
 
           <p style={{ fontSize: "1.05rem", lineHeight: 1.5, fontWeight: 500 }}>{q.text}</p>
 
+          {q.imageUrl && (
+            <div style={{ margin: "1.2em 0", textAlign: "center" }}>
+              <div style={{ display: "inline-block", background: "var(--paper-100)", padding: "8px", borderRadius: "var(--radius-md)", border: "1px solid var(--line)" }}>
+                <img
+                  src={q.imageUrl}
+                  alt={q.imageCaption || "Question Diagram"}
+                  style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain", borderRadius: "var(--radius-sm)", display: "block" }}
+                />
+                {q.imageCaption && (
+                  <div style={{ fontSize: "0.82rem", color: "var(--ink-500)", fontStyle: "italic", marginTop: "6px" }}>
+                    {q.imageCaption}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {q.type === "MCQ" ? (
             <div style={{ display: "grid", gap: "0.6em", marginTop: "1.2em" }}>
               {["A", "B", "C", "D", "E"]

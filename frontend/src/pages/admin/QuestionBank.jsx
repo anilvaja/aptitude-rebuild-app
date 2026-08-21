@@ -11,6 +11,8 @@ const EMPTY_FORM = {
   choiceD: "",
   choiceE: "",
   correctChoice: "A",
+  imageUrl: "",
+  imageCaption: "",
   solution: "",
   marks: 1,
   negativeMarks: 0,
@@ -110,6 +112,17 @@ export default function QuestionBank() {
     } finally {
       setIsImporting(false);
     }
+  }
+
+  // Handle image upload from file picker in Question form
+  function handleQuestionImageUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (uploadEvent) => {
+      setForm((f) => ({ ...f, imageUrl: uploadEvent.target.result }));
+    };
+    reader.readAsDataURL(file);
   }
 
   // Build hierarchical category tree with subcategories & question counts
@@ -237,6 +250,8 @@ export default function QuestionBank() {
       ...q,
       categoryId: q.categoryId || "",
       correctChoice: q.correctChoice || "A",
+      imageUrl: q.imageUrl || "",
+      imageCaption: q.imageCaption || "",
       subject: q.subject || q.category?.subject || "Claude Architecture",
       subCategory: q.subCategory || "",
     });
@@ -258,6 +273,8 @@ export default function QuestionBank() {
         categoryId: form.categoryId || null,
         subject: form.subject || null,
         subCategory: form.subCategory || null,
+        imageUrl: form.imageUrl?.trim() || null,
+        imageCaption: form.imageCaption?.trim() || null,
         marks: Number(form.marks),
         negativeMarks: Number(form.negativeMarks),
         defaultTimeSeconds: Number(form.defaultTimeSeconds),
@@ -324,7 +341,7 @@ export default function QuestionBank() {
             Question Bank Management
           </h1>
           <p style={{ color: "var(--ink-500)", margin: 0, fontSize: "0.92rem" }}>
-            Browse hierarchy tree, author questions, and bulk import question banks via Excel (.xlsx) or CSV.
+            Browse hierarchy tree, author questions with diagrams/images, and bulk import question banks via Excel (.xlsx) or CSV.
           </p>
         </div>
 
@@ -393,7 +410,7 @@ export default function QuestionBank() {
               <div>
                 <h2 style={{ margin: 0, fontSize: "1.35rem" }}>Bulk Import Questions (Excel / CSV)</h2>
                 <p style={{ color: "var(--ink-500)", margin: "0.2em 0 0 0", fontSize: "0.88rem" }}>
-                  Upload an Excel (.xlsx) or CSV file with your questions. Missing categories are auto-created.
+                  Upload an Excel (.xlsx) or CSV file with your questions and diagrams. Missing categories are auto-created.
                 </p>
               </div>
               <button
@@ -424,7 +441,7 @@ export default function QuestionBank() {
                   Need the sample format template?
                 </strong>
                 <span style={{ fontSize: "0.82rem", color: "var(--ink-500)" }}>
-                  Includes pre-configured columns: subject, category, subCategory, type, text, choiceA-E, correctChoice, solution, marks, negativeMarks, defaultTimeSeconds, difficulty.
+                  Includes pre-configured columns: subject, category, subCategory, type, text, choiceA-E, correctChoice, imageUrl, imageCaption, solution, marks, negativeMarks, defaultTimeSeconds, difficulty.
                 </span>
               </div>
 
@@ -479,11 +496,12 @@ export default function QuestionBank() {
                 <div style={{ display: "grid", gap: "0.6em", maxHeight: "240px", overflowY: "auto", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", padding: "0.6em", background: "var(--paper-100)" }}>
                   {parsedRows.slice(0, 3).map((r, i) => (
                     <div key={i} style={{ background: "#fff", padding: "0.7em", borderRadius: "var(--radius-sm)", border: "1px solid var(--line)", fontSize: "0.82rem" }}>
-                      <div style={{ display: "flex", gap: "0.4em", marginBottom: "0.2em" }}>
+                      <div style={{ display: "flex", gap: "0.4em", marginBottom: "0.2em", alignItems: "center" }}>
                         <span className="badge badge-neutral" style={{ fontSize: "0.68rem" }}>Row #{i + 1}</span>
                         <span className="badge badge-indigo" style={{ fontSize: "0.68rem" }}>{r.subject || "General"}</span>
                         <span className="badge badge-purple" style={{ fontSize: "0.68rem" }}>{r.category || "Uncategorized"}</span>
                         <span className="badge badge-ok" style={{ fontSize: "0.68rem" }}>Ans: {r.correctChoice || "A"}</span>
+                        {r.imageUrl && <span className="badge badge-accent" style={{ fontSize: "0.68rem" }}>🖼️ Has Diagram</span>}
                       </div>
                       <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>{r.text}</div>
                     </div>
@@ -681,7 +699,7 @@ export default function QuestionBank() {
             overflowY: "auto",
           }}
         >
-          <div className="card" style={{ width: "100%", maxWidth: "740px", maxHeight: "90vh", overflowY: "auto", padding: "2.2em", borderRadius: "var(--radius-lg)" }}>
+          <div className="card" style={{ width: "100%", maxWidth: "780px", maxHeight: "90vh", overflowY: "auto", padding: "2.2em", borderRadius: "var(--radius-lg)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.2em" }}>
               <h2 style={{ margin: 0, fontSize: "1.35rem" }}>{form.id ? "Edit Question" : "Create New Question"}</h2>
               <button
@@ -765,6 +783,68 @@ export default function QuestionBank() {
                   onChange={setField("text")}
                   style={{ lineHeight: "1.45" }}
                 />
+              </div>
+
+              {/* Question Diagram / Image Upload & URL */}
+              <div style={{ background: "var(--paper-100)", padding: "1.1em", borderRadius: "var(--radius-md)", border: "1px solid var(--line)" }}>
+                <div style={{ fontWeight: 700, fontSize: "0.85rem", marginBottom: "0.6em", color: "var(--ink-800)" }}>
+                  🖼️ Question Diagram / Illustration (Optional)
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.8em", marginBottom: "0.8em" }}>
+                  <div>
+                    <label className="label" style={{ fontSize: "0.75rem" }}>Image URL or Web Link</label>
+                    <input
+                      className="input"
+                      placeholder="https://... or data:image/..."
+                      value={form.imageUrl || ""}
+                      onChange={setField("imageUrl")}
+                      style={{ fontSize: "0.84rem" }}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="label" style={{ fontSize: "0.75rem" }}>Or Upload Local File</label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="input"
+                      onChange={handleQuestionImageUpload}
+                      style={{ fontSize: "0.82rem", padding: "0.3em" }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="label" style={{ fontSize: "0.75rem" }}>Figure Caption / Alt Title (Optional)</label>
+                  <input
+                    className="input"
+                    placeholder="e.g. Figure 1: ReAct Agent Architecture Workflow"
+                    value={form.imageCaption || ""}
+                    onChange={setField("imageCaption")}
+                    style={{ fontSize: "0.84rem" }}
+                  />
+                </div>
+
+                {/* Live Image Preview */}
+                {form.imageUrl && (
+                  <div style={{ marginTop: "0.8em", textAlign: "center", position: "relative" }}>
+                    <div style={{ display: "inline-block", background: "#fff", padding: "6px", borderRadius: "var(--radius-sm)", border: "1px solid var(--line)" }}>
+                      <img
+                        src={form.imageUrl}
+                        alt="Question Preview"
+                        style={{ maxWidth: "100%", maxHeight: "180px", objectFit: "contain", borderRadius: "var(--radius-sm)" }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setForm((f) => ({ ...f, imageUrl: "", imageCaption: "" }))}
+                        style={{ display: "block", margin: "4px auto 0", background: "none", border: "none", color: "var(--danger-500)", fontSize: "0.75rem", cursor: "pointer" }}
+                      >
+                        ✕ Remove Image
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {form.type === "MCQ" && (
@@ -1157,6 +1237,11 @@ export default function QuestionBank() {
                     <span className={`badge ${diffBadge}`} style={{ fontSize: "0.7rem" }}>
                       {q.difficulty}
                     </span>
+                    {q.imageUrl && (
+                      <span className="badge badge-accent" style={{ fontSize: "0.7rem" }}>
+                        🖼️ Diagram
+                      </span>
+                    )}
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", gap: "0.8em" }}>
@@ -1174,6 +1259,24 @@ export default function QuestionBank() {
                 <div style={{ fontSize: "1.02rem", fontWeight: 600, color: "var(--ink-900)", lineHeight: "1.45" }}>
                   {q.text}
                 </div>
+
+                {/* Question Diagram / Image */}
+                {q.imageUrl && (
+                  <div style={{ margin: "0.5em 0", textAlign: "center" }}>
+                    <div style={{ display: "inline-block", background: "var(--paper-100)", padding: "8px", borderRadius: "var(--radius-md)", border: "1px solid var(--line)" }}>
+                      <img
+                        src={q.imageUrl}
+                        alt={q.imageCaption || "Question Diagram"}
+                        style={{ maxWidth: "100%", maxHeight: "260px", objectFit: "contain", borderRadius: "var(--radius-sm)", display: "block" }}
+                      />
+                      {q.imageCaption && (
+                        <div style={{ fontSize: "0.82rem", color: "var(--ink-500)", fontStyle: "italic", marginTop: "6px" }}>
+                          {q.imageCaption}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* Multiple Choice Options Preview */}
                 {q.type === "MCQ" && (
