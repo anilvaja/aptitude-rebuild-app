@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { RequireAuth, RequireRole } from "./components/Guards";
+import { useAuth } from "./context/AuthContext";
 import Layout from "./components/Layout";
 import Login from "./pages/Login";
 import TestList from "./pages/student/TestList";
@@ -12,6 +13,16 @@ import TestBuilder from "./pages/admin/TestBuilder";
 import TestAnalytics from "./pages/admin/TestAnalytics";
 import Users from "./pages/admin/Users";
 import ReviewQueue from "./pages/admin/ReviewQueue";
+
+import Profile from "./pages/Profile";
+
+function HomeRedirect() {
+  const { user } = useAuth();
+  if (user?.role === "ADMIN") {
+    return <Navigate to="/admin" replace />;
+  }
+  return <TestList />;
+}
 
 export default function App() {
   return (
@@ -38,8 +49,9 @@ export default function App() {
           <RequireAuth>
             <Layout>
               <Routes>
-                <Route path="/" element={<RequireRole role="STUDENT"><TestList /></RequireRole>} />
+                <Route path="/" element={<HomeRedirect />} />
                 <Route path="/history" element={<RequireRole role="STUDENT"><History /></RequireRole>} />
+                <Route path="/profile" element={<Profile />} />
                 <Route path="/result/:id" element={<Result />} />
 
                 <Route path="/admin" element={<RequireRole role="ADMIN"><Overview /></RequireRole>} />

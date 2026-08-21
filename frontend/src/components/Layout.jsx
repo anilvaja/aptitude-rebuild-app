@@ -13,53 +13,102 @@ export default function Layout({ children }) {
     navigate("/login");
   }
 
+  const isAdmin = user?.role === "ADMIN";
+
   const studentLinks = [
-    { to: "/", label: "Tests" },
-    { to: "/history", label: "History" },
-  ];
-  const adminLinks = [
-    { to: "/admin", label: "Overview" },
-    { to: "/admin/questions", label: "Question bank" },
-    { to: "/admin/tests", label: "Tests" },
-    { to: "/admin/users", label: "Students" },
-    { to: "/admin/review", label: "Review queue" },
-    { to: "/", label: "Take Tests" },
+    { to: "/", label: "📚 Available Tests" },
+    { to: "/history", label: "📜 Test History" },
+    { to: "/profile", label: "👤 My Profile" },
   ];
 
-  const links = user?.role === "ADMIN" ? adminLinks : studentLinks;
+  const adminLinks = [
+    { to: "/admin", label: "📊 Overview" },
+    { to: "/admin/questions", label: "📝 Question Bank" },
+    { to: "/admin/tests", label: "🎓 Examination Papers" },
+    { to: "/admin/users", label: "👥 Students Roster" },
+    { to: "/admin/review", label: "✍️ Review Queue" },
+    { to: "/profile", label: "👤 My Profile" },
+  ];
+
+  const links = isAdmin ? adminLinks : studentLinks;
   const isRunner = location.pathname.startsWith("/attempt/");
   const showActiveBanner = activeTest?.hasActive && !isRunner;
 
+  const gradeDisplay = user?.grade ? user.grade.replace("_", " ") : "General";
+
   return (
-    <div style={{ minHeight: "100%", display: "flex", flexDirection: "column" }}>
+    <div style={{ minHeight: "100%", display: "flex", flexDirection: "column", background: "var(--paper-50)" }}>
+      {/* Top Main Navigation Bar */}
       <header
         style={{
-          background: "var(--ink-900)",
-          color: "var(--paper-0)",
-          padding: "0.9em 1.6em",
+          background: isAdmin
+            ? "linear-gradient(90deg, #0f172a 0%, #1e293b 100%)"
+            : "linear-gradient(90deg, #1e1b4b 0%, #312e81 100%)",
+          color: "#fff",
+          padding: "0.85em 1.8em",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+          borderBottom: isAdmin ? "2px solid var(--brass-500)" : "2px solid #6366f1",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "2.2em" }}>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "1.15rem" }}>
-            Aptitude
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: "2em" }}>
+          {/* Logo & Portal Identity */}
+          <Link
+            to={isAdmin ? "/admin" : "/"}
+            style={{
+              textDecoration: "none",
+              color: "#fff",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.6em",
+            }}
+          >
+            <span
+              style={{
+                fontFamily: "var(--font-display)",
+                fontWeight: 800,
+                fontSize: "1.25rem",
+                letterSpacing: "-0.02em",
+                color: "#fff",
+              }}
+            >
+              Aptitude
+            </span>
+            <span
+              style={{
+                fontSize: "0.72rem",
+                padding: "0.2em 0.6em",
+                borderRadius: "999px",
+                fontWeight: 700,
+                background: isAdmin ? "var(--brass-500)" : "rgba(255,255,255,0.2)",
+                color: "#fff",
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+              }}
+            >
+              {isAdmin ? "Admin Console" : "Student Portal"}
+            </span>
+          </Link>
+
+          {/* Navigation Items */}
           {user && (
-            <nav style={{ display: "flex", gap: "1.4em" }}>
+            <nav style={{ display: "flex", gap: "1em", alignItems: "center" }}>
               {links.map((l) => (
                 <NavLink
                   key={l.to}
                   to={l.to}
                   end={l.to === "/" || l.to === "/admin"}
                   style={({ isActive }) => ({
-                    color: isActive ? "var(--brass-500)" : "rgba(250,249,246,0.75)",
+                    color: isActive ? "#fff" : "rgba(255, 255, 255, 0.7)",
                     textDecoration: "none",
-                    fontSize: "0.9rem",
-                    fontWeight: 600,
-                    paddingBottom: "0.2em",
-                    borderBottom: isActive ? "2px solid var(--brass-500)" : "2px solid transparent",
+                    fontSize: "0.86rem",
+                    fontWeight: isActive ? 700 : 500,
+                    padding: "0.45em 0.85em",
+                    borderRadius: "var(--radius-sm)",
+                    background: isActive ? (isAdmin ? "rgba(201, 150, 47, 0.25)" : "rgba(99, 102, 241, 0.3)") : "transparent",
+                    transition: "all 0.15s ease",
                   })}
                 >
                   {l.label}
@@ -68,13 +117,34 @@ export default function Layout({ children }) {
             </nav>
           )}
         </div>
+
+        {/* User Identity & Logout Action */}
         {user && (
-          <div style={{ display: "flex", alignItems: "center", gap: "1em", fontSize: "0.85rem" }}>
-            <span style={{ opacity: 0.8 }}>
-              {user.name} · {user.role === "ADMIN" ? "Admin" : "Student"}
-            </span>
-            <button className="btn btn-ghost" style={{ borderColor: "rgba(250,249,246,0.3)", color: "#fff" }} onClick={handleLogout}>
-              Log out
+          <div style={{ display: "flex", alignItems: "center", gap: "1.1em" }}>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: "0.88rem", fontWeight: 700, color: "#fff" }}>
+                {user.name}
+              </div>
+              <div style={{ fontSize: "0.74rem", color: "rgba(255, 255, 255, 0.7)" }}>
+                {isAdmin ? (
+                  <span style={{ color: "var(--brass-500)", fontWeight: 600 }}>Administrator</span>
+                ) : (
+                  <span>Grade: {gradeDisplay}</span>
+                )}
+              </div>
+            </div>
+
+            <button
+              className="btn btn-ghost"
+              style={{
+                borderColor: "rgba(255,255,255,0.25)",
+                color: "#fff",
+                fontSize: "0.8rem",
+                padding: "0.4em 0.85em",
+              }}
+              onClick={handleLogout}
+            >
+              Log out 🚪
             </button>
           </div>
         )}
@@ -147,7 +217,7 @@ export default function Layout({ children }) {
         </div>
       )}
 
-      <main style={{ flex: 1, padding: "2em 1.6em", maxWidth: 1080, margin: "0 auto", width: "100%" }}>
+      <main style={{ flex: 1, padding: "2em 1.6em", maxWidth: 1120, margin: "0 auto", width: "100%" }}>
         {children}
       </main>
     </div>

@@ -30,6 +30,16 @@ export default function TestBuilder() {
   const [poolSubjectFilter, setPoolSubjectFilter] = useState("ALL");
   const [poolCatFilter, setPoolCatFilter] = useState("ALL");
   const [poolSearchQuery, setPoolSearchQuery] = useState("");
+  const [builderTab, setBuilderTab] = useState("MANUAL"); // MANUAL | AUTO_GENERATOR
+
+  // Auto-Generator Blueprint State
+  const [autoTotalCount, setAutoTotalCount] = useState(20);
+  const [autoRules, setAutoRules] = useState([
+    { subject: "Mathematics", categoryId: "ALL", subCategory: "ALL", difficulty: "ALL", percentage: 50 },
+    { subject: "English", categoryId: "ALL", subCategory: "ALL", difficulty: "ALL", percentage: 50 },
+  ]);
+  const [isAutoGenerating, setIsAutoGenerating] = useState(false);
+  const [autoGenSummary, setAutoGenSummary] = useState(null);
 
   function refresh() {
     api.get("/api/tests").then(setTests).catch((e) => setError(e.message));
@@ -40,6 +50,7 @@ export default function TestBuilder() {
 
   async function startCreate() {
     setError(null);
+    setAutoGenSummary(null);
     const allQuestions = await api.get("/api/questions?status=ACTIVE");
     setQuestions(allQuestions);
     setForm({
@@ -53,10 +64,12 @@ export default function TestBuilder() {
       selectedIds: [],
       overrides: {},
     });
+    setBuilderTab("MANUAL");
   }
 
   async function startEdit(testSummary) {
     setError(null);
+    setAutoGenSummary(null);
     const [full, allQuestions] = await Promise.all([
       api.get(`/api/tests/${testSummary.id}`),
       api.get("/api/questions?status=ACTIVE"),
@@ -80,6 +93,7 @@ export default function TestBuilder() {
       selectedIds: full.testQuestions.map((tq) => tq.questionId),
       overrides,
     });
+    setBuilderTab("MANUAL");
   }
 
   function toggleQuestion(id) {
@@ -102,6 +116,62 @@ export default function TestBuilder() {
       ...f,
       selectedIds: f.selectedIds.filter((id) => !idsToRemove.has(id)),
     }));
+  }
+
+  // Auto-Generator Rule Management
+  function addAutoRule() {
+    setAutoRules((prev) => [
+      ...prev,
+      { subject: "Claude Architecture", categoryId: "ALL", subCategory: "ALL", difficulty: "ALL", percentage: 0 },
+    ]);
+  }
+
+  function updateAutoRule(index, patch) {
+    setAutoRules((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], ...patch };
+      // Reset category if subject changed
+      if (patch.subject && patch.subject !== "ALL") {
+        next[index].categoryId = "ALL";
+        next[index].subCategory = "ALL";
+      }
+      return next;
+    });
+  }
+
+  function removeAutoRule(index) {
+    setAutoRules((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  // Calculate sum of weightages
+  const totalWeightagePercent = useMemo(() => {
+    return autoRules.reduce((sum, r) => sum + (Number(r.percentage) || 0), 0);
+  }, [autoRules]);
+
+  const isWeightageValid = Math.round(totalWeightagePercent) === 100;
+
+  async function executeAutoGeneration() {
+    if (!isWeightageValid) return;
+    setIsAutoGenerating(true);
+    setError(null);
+    setAutoGenSummary(null);
+
+    try {
+      const res = await api.post("/api/tests/auto-generate", {
+        totalCount: autoTotalCount,
+        rules: autoRules,
+      });
+
+      setForm((f) => ({
+        ...f,
+        selectedIds: res.selectedQuestionIds,
+      }));
+      setAutoGenSummary(res);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsAutoGenerating(false);
+    }
   }
 
   async function save(e) {
@@ -202,764 +272,205 @@ export default function TestBuilder() {
     });
   }, [questions, poolSubjectFilter, poolCatFilter, poolSearchQuery]);
 
-  // Map of questions by ID for live calculation
-  const questionsById = useMemo(() => Object.fromEntries(questions.map((q) => [q.id, q])), [questions]);
+  const questionsById = useMemo(() => {
+    const map = {};
+    questions.forEach((q) => {
+      map[q.id] = q;
+    });
+    return map;
+  }, [questions]);
 
-  // Compute metrics for tabs
-  const tabCounts = useMemo(() => {
-    if (!tests) return { all: 0, ccar: 0, primary: 0, draft: 0, published: 0, archived: 0 };
-    return {
-      all: tests.length,
-      ccar: tests.filter((t) => t.title.toLowerCase().includes("ccar") || t.title.toLowerCase().includes("claude")).length,
-      primary: tests.filter((t) => t.title.toLowerCase().includes("class 1") || t.title.toLowerCase().includes("class 2")).length,
-      published: tests.filter((t) => t.status === "PUBLISHED").length,
-      draft: tests.filter((t) => t.status === "DRAFT").length,
-      archived: tests.filter((t) => t.status === "ARCHIVED").length,
-    };
-  }, [tests]);
+  // Unique subjects and categories for builder dropdowns
+  const availableSubjects = useMemo(() => {
+    const set = new Set();
+    questions.forEach((q) => {
+      if (q.subject) set.add(q.subject);
+    });
+    return Array.from(set);
+  }, [questions]);
 
-  // -------------------------------------------------------------
-  // Test Builder / Editor Workspace Screen
-  // -------------------------------------------------------------
-  if (form) {
-    const duration = totalDuration(form.selectedIds, form.overrides, questionsById);
-    const marks = totalMarks(form.selectedIds, form.overrides, questionsById);
-    const mins = Math.floor(duration / 60);
-    const secs = duration % 60;
-
-    return (
-      <div style={{ maxWidth: 1100, margin: "0 auto", paddingBottom: "3em" }}>
-        {/* Workspace Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.4em", flexWrap: "wrap", gap: "1em" }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5em", marginBottom: "0.2em" }}>
-              <span className="badge badge-accent" style={{ fontSize: "0.75rem", fontWeight: 700 }}>
-                EXAMINATION AUTHORING WORKSPACE
-              </span>
-            </div>
-            <h1 style={{ margin: 0, fontSize: "1.8rem", letterSpacing: "-0.01em" }}>
-              {form.id ? `Edit Examination: ${form.title}` : "Author New Examination Paper"}
-            </h1>
-          </div>
-
-          <div style={{ display: "flex", gap: "0.8em" }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setForm(null)}>
-              Cancel
-            </button>
-            <button type="button" className="btn btn-primary" onClick={save} style={{ fontWeight: 700, padding: "0.6em 1.6em" }}>
-              💾 Save Examination Paper
-            </button>
-          </div>
-        </div>
-
-        {error && <div className="error-banner">{error}</div>}
-
-        {/* Live Calculation Metric Bar */}
-        <div
-          className="card"
-          style={{
-            padding: "1.2em 1.6em",
-            marginBottom: "1.4em",
-            background: "linear-gradient(135deg, #14181f 0%, #1f2530 100%)",
-            color: "#fff",
-            borderRadius: "var(--radius-lg)",
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-            gap: "1.2em",
-            boxShadow: "0 8px 24px rgba(20, 24, 31, 0.2)"
-          }}
-        >
-          <div>
-            <div style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.6)", textTransform: "uppercase", fontWeight: 700 }}>
-              Questions Selected
-            </div>
-            <div className="mono" style={{ fontSize: "1.4rem", fontWeight: 700, color: form.selectedIds.length > 0 ? "var(--brass-500)" : "#ef4444" }}>
-              📝 {form.selectedIds.length} Items
-            </div>
-          </div>
-
-          <div>
-            <div style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.6)", textTransform: "uppercase", fontWeight: 700 }}>
-              Total Exam Duration
-            </div>
-            <div className="mono" style={{ fontSize: "1.4rem", fontWeight: 700, color: "#fff" }}>
-              ⏱️ {mins}m {secs > 0 ? `${secs}s` : ""}
-            </div>
-          </div>
-
-          <div>
-            <div style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.6)", textTransform: "uppercase", fontWeight: 700 }}>
-              Maximum Score
-            </div>
-            <div className="mono" style={{ fontSize: "1.4rem", fontWeight: 700, color: "#fff" }}>
-              ⚖️ {marks} Marks
-            </div>
-          </div>
-
-          <div>
-            <div style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.6)", textTransform: "uppercase", fontWeight: 700 }}>
-              Target Grade Tier
-            </div>
-            <div style={{ fontSize: "1rem", fontWeight: 700, color: "var(--brass-500)", marginTop: "0.2em" }}>
-              {form.targetGrade === "GRADE_1" ? "🎒 Grade 1 (Primary)" : form.targetGrade === "GRADE_2" ? "🎒 Grade 2 (Primary)" : form.targetGrade === "PROFESSIONAL" ? "🎓 Masters / Professional" : "🌐 Open to All"}
-            </div>
-          </div>
-        </div>
-
-        <form onSubmit={save} style={{ display: "grid", gap: "1.6em" }}>
-          {/* General Metadata & Access Settings */}
-          <div className="card" style={{ padding: "1.8em", display: "grid", gap: "1.2em", borderRadius: "var(--radius-lg)" }}>
-            <h3 style={{ margin: 0, fontSize: "1.15rem", borderBottom: "1px solid var(--line)", paddingBottom: "0.5em" }}>
-              1. General Details & Access Policies
-            </h3>
-
-            <div>
-              <label className="label">Examination Paper Title *</label>
-              <input
-                className="input"
-                required
-                placeholder="e.g. Claude Certified Architect – Foundations (CCAR-F) Practice Exam 4"
-                value={form.title}
-                onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-                style={{ fontSize: "1rem", fontWeight: 600 }}
-              />
-            </div>
-
-            <div>
-              <label className="label">Description & Candidate Instructions</label>
-              <textarea
-                className="input"
-                rows={2}
-                placeholder="Describe examination objectives, syllabus scope, and blueprint specifications..."
-                value={form.description}
-                onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-              />
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: "1.2em" }}>
-              <div>
-                <label className="label">Target Audience / Grade Tier *</label>
-                <select
-                  className="input"
-                  value={form.targetGrade || "PROFESSIONAL"}
-                  onChange={(e) => setForm((f) => ({ ...f, targetGrade: e.target.value }))}
-                >
-                  <option value="PROFESSIONAL">🎓 Masters / IT Professional (CCAR-F Track)</option>
-                  <option value="GRADE_2">🎒 Grade 2 (Class 2 Primary School)</option>
-                  <option value="GRADE_1">🎒 Grade 1 (Class 1 Primary School)</option>
-                  <option value="GRADE_3">🎒 Grade 3 (Primary School)</option>
-                  <option value="ALL">🌐 Open to All Students</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="label">Minimum Age (Years)</label>
-                <input
-                  className="input"
-                  type="number"
-                  placeholder="e.g. 18 (or 6 for school)"
-                  min="4"
-                  max="100"
-                  value={form.minAge || ""}
-                  onChange={(e) => setForm((f) => ({ ...f, minAge: e.target.value }))}
-                />
-              </div>
-
-              <div>
-                <label className="label">Publication Status</label>
-                <select
-                  className="input"
-                  value={form.status}
-                  onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
-                >
-                  <option value="DRAFT">Draft (Hidden from students)</option>
-                  <option value="PUBLISHED">Published (Active in portal)</option>
-                  <option value="ARCHIVED">Archived (Retired)</option>
-                </select>
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: "2.4em", paddingTop: "0.4em", flexWrap: "wrap" }}>
-              <label style={{ display: "flex", alignItems: "center", gap: "0.6em", cursor: "pointer", fontWeight: 600 }}>
-                <input
-                  type="checkbox"
-                  checked={form.shuffleQuestions}
-                  onChange={(e) => setForm((f) => ({ ...f, shuffleQuestions: e.target.checked }))}
-                />
-                🔀 Shuffle question order randomly per attempt (Anti-cheating)
-              </label>
-
-              <label style={{ display: "flex", alignItems: "center", gap: "0.6em", cursor: "pointer", fontWeight: 600 }}>
-                <input
-                  type="checkbox"
-                  checked={form.autoSubmit}
-                  onChange={(e) => setForm((f) => ({ ...f, autoSubmit: e.target.checked }))}
-                />
-                ⏱️ Server auto-submit when countdown hits zero
-              </label>
-            </div>
-          </div>
-
-          {/* Question Pool Selector */}
-          <div className="card" style={{ padding: "1.8em", borderRadius: "var(--radius-lg)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.8em", flexWrap: "wrap", gap: "0.8em" }}>
-              <h3 style={{ margin: 0, fontSize: "1.15rem" }}>
-                2. Question Pool Selection ({form.selectedIds.length} Selected)
-              </h3>
-
-              <div style={{ display: "flex", gap: "0.6em" }}>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  style={{ fontSize: "0.82rem", padding: "0.35em 0.8em" }}
-                  onClick={() => selectAllFiltered(filteredPoolQuestions)}
-                >
-                  ✓ Select All Filtered ({filteredPoolQuestions.length})
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  style={{ fontSize: "0.82rem", padding: "0.35em 0.8em", color: "var(--danger-500)" }}
-                  onClick={() => deselectAllFiltered(filteredPoolQuestions)}
-                >
-                  ✕ Deselect Filtered
-                </button>
-              </div>
-            </div>
-
-            {/* Question Pool Filters Bar */}
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1.2fr 1.5fr",
-                gap: "0.8em",
-                background: "var(--paper-100)",
-                padding: "0.8em 1em",
-                borderRadius: "var(--radius-md)",
-                border: "1px solid var(--line)",
-                marginBottom: "1em",
-              }}
-            >
-              <div>
-                <label className="label" style={{ fontSize: "0.74rem", marginBottom: "0.2em" }}>Filter Subject</label>
-                <select
-                  className="input"
-                  style={{ fontSize: "0.84rem", padding: "0.35em 0.6em" }}
-                  value={poolSubjectFilter}
-                  onChange={(e) => {
-                    setPoolSubjectFilter(e.target.value);
-                    setPoolCatFilter("ALL");
-                  }}
-                >
-                  <option value="ALL">All Subjects</option>
-                  <option value="Claude Architecture">Claude Architecture</option>
-                  <option value="Mathematics">Mathematics</option>
-                  <option value="English">English</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="label" style={{ fontSize: "0.74rem", marginBottom: "0.2em" }}>Filter Category</label>
-                <select
-                  className="input"
-                  style={{ fontSize: "0.84rem", padding: "0.35em 0.6em" }}
-                  value={poolCatFilter}
-                  onChange={(e) => setPoolCatFilter(e.target.value)}
-                >
-                  <option value="ALL">All Categories</option>
-                  {categories
-                    .filter((c) => !c.parentId && (poolSubjectFilter === "ALL" || c.subject === poolSubjectFilter))
-                    .map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="label" style={{ fontSize: "0.74rem", marginBottom: "0.2em" }}>Search Question Text</label>
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="🔍 Type keywords..."
-                  style={{ fontSize: "0.84rem", padding: "0.35em 0.6em" }}
-                  value={poolSearchQuery}
-                  onChange={(e) => setPoolSearchQuery(e.target.value)}
-                />
-              </div>
-            </div>
-
-            {/* Questions Selection Scroll Area */}
-            <div style={{ display: "grid", gap: "0.6em", maxHeight: 520, overflowY: "auto", paddingRight: "4px" }}>
-              {filteredPoolQuestions.length === 0 && (
-                <div style={{ textAlign: "center", padding: "2.5em 1em", color: "var(--ink-500)" }}>
-                  No questions match your filter criteria.
-                </div>
-              )}
-
-              {filteredPoolQuestions.map((q) => {
-                const selected = form.selectedIds.includes(q.id);
-
-                return (
-                  <div
-                    key={q.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: "0.9em",
-                      padding: "0.85em 1em",
-                      border: `1px solid ${selected ? "var(--brass-500)" : "var(--line)"}`,
-                      borderRadius: "var(--radius-md)",
-                      background: selected ? "rgba(201, 150, 47, 0.08)" : "#fff",
-                      transition: "all 0.12s ease",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      onChange={() => toggleQuestion(q.id)}
-                      style={{ marginTop: "3px", width: "18px", height: "18px", cursor: "pointer" }}
-                    />
-
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", gap: "0.4em", marginBottom: "0.3em", flexWrap: "wrap", alignItems: "center" }}>
-                        <span className="badge badge-neutral" style={{ fontSize: "0.7rem" }}>
-                          {q.type}
-                        </span>
-                        {q.subject && (
-                          <span className="badge badge-indigo" style={{ fontSize: "0.7rem" }}>
-                            📚 {q.subject}
-                          </span>
-                        )}
-                        {q.category && (
-                          <span className="badge badge-neutral" style={{ fontSize: "0.7rem" }}>
-                            📂 {q.category.name}
-                          </span>
-                        )}
-                        {q.subCategory && (
-                          <span className="badge badge-purple" style={{ fontSize: "0.7rem" }}>
-                            🔹 {q.subCategory}
-                          </span>
-                        )}
-                        <span className={`badge ${q.difficulty === "HARD" ? "badge-danger" : q.difficulty === "MEDIUM" ? "badge-warn" : "badge-ok"}`} style={{ fontSize: "0.68rem" }}>
-                          {q.difficulty}
-                        </span>
-                      </div>
-
-                      <div style={{ fontSize: "0.92rem", color: "var(--ink-900)", lineHeight: "1.4" }}>
-                        {q.text}
-                      </div>
-                    </div>
-
-                    {/* Per-question overrides */}
-                    {selected && (
-                      <div style={{ display: "flex", gap: "0.4em", alignItems: "center", flexShrink: 0 }}>
-                        <div style={{ textAlign: "right" }}>
-                          <span style={{ fontSize: "0.68rem", color: "var(--ink-500)", display: "block" }}>Time (s)</span>
-                          <input
-                            className="input"
-                            type="number"
-                            placeholder={`${q.defaultTimeSeconds}s`}
-                            style={{ width: 68, fontSize: "0.82rem", padding: "0.25em 0.4em" }}
-                            value={form.overrides[q.id]?.timeOverrideSeconds || ""}
-                            onChange={(e) =>
-                              setForm((f) => ({
-                                ...f,
-                                overrides: {
-                                  ...f.overrides,
-                                  [q.id]: { ...f.overrides[q.id], timeOverrideSeconds: Number(e.target.value) || undefined },
-                                },
-                              }))
-                            }
-                          />
-                        </div>
-
-                        <div style={{ textAlign: "right" }}>
-                          <span style={{ fontSize: "0.68rem", color: "var(--ink-500)", display: "block" }}>Marks</span>
-                          <input
-                            className="input"
-                            type="number"
-                            step="0.5"
-                            placeholder={`${q.marks}`}
-                            style={{ width: 55, fontSize: "0.82rem", padding: "0.25em 0.4em" }}
-                            value={form.overrides[q.id]?.marksOverride || ""}
-                            onChange={(e) =>
-                              setForm((f) => ({
-                                ...f,
-                                overrides: {
-                                  ...f.overrides,
-                                  [q.id]: { ...f.overrides[q.id], marksOverride: Number(e.target.value) || undefined },
-                                },
-                              }))
-                            }
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.8em" }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setForm(null)}>
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary" style={{ fontWeight: 700, padding: "0.7em 2em" }}>
-              💾 Save Examination Paper
-            </button>
-          </div>
-        </form>
-      </div>
-    );
-  }
-
-  // -------------------------------------------------------------
-  // Main Examination Management Hub View
-  // -------------------------------------------------------------
   return (
     <div>
-      {/* Top Header */}
+      {/* Top Main Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.6em", flexWrap: "wrap", gap: "1em" }}>
         <div>
-          <h1 style={{ margin: "0 0 0.2em 0", fontSize: "1.85rem", letterSpacing: "-0.01em" }}>
-            Examination Papers Management
+          <h1 style={{ margin: "0 0 0.2em 0", fontSize: "1.75rem", letterSpacing: "-0.01em" }}>
+            Examination Papers & Assessments
           </h1>
-          <p style={{ color: "var(--ink-500)", margin: 0, fontSize: "0.95rem" }}>
-            Configure examination papers, assign target grades & age restrictions, assemble question pools, and inspect analytics.
+          <p style={{ color: "var(--ink-500)", margin: 0, fontSize: "0.92rem" }}>
+            Configure timed exam papers, assign target grades, shuffle questions, and auto-generate question sets by weightage blueprints.
           </p>
         </div>
 
-        <button className="btn btn-accent" onClick={startCreate} style={{ fontWeight: 700, padding: "0.65em 1.5em" }}>
-          + Author New Examination
+        <button className="btn btn-primary" onClick={startCreate} style={{ fontWeight: 700 }}>
+          + Create New Exam Paper
         </button>
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner" style={{ marginBottom: "1.2em" }}>⚠️ {error}</div>}
 
-      {/* KPI Overview Cards */}
+      {/* Test Catalog Filtering & Search */}
       <div
+        className="card"
         style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-          gap: "1.2em",
-          marginBottom: "1.8em",
-        }}
-      >
-        <div className="card" style={{ padding: "1.3em", borderRadius: "var(--radius-lg)", borderLeft: "4px solid var(--ok-500)" }}>
-          <div style={{ fontSize: "0.78rem", color: "var(--ink-500)", textTransform: "uppercase", fontWeight: 700 }}>
-            Published Papers
-          </div>
-          <div className="mono" style={{ fontSize: "1.6rem", fontWeight: 700, color: "var(--ink-900)", marginTop: "0.2em" }}>
-            🎓 {tabCounts.published} Active
-          </div>
-        </div>
-
-        <div className="card" style={{ padding: "1.3em", borderRadius: "var(--radius-lg)", borderLeft: "4px solid var(--brass-500)" }}>
-          <div style={{ fontSize: "0.78rem", color: "var(--ink-500)", textTransform: "uppercase", fontWeight: 700 }}>
-            Claude Architecture
-          </div>
-          <div className="mono" style={{ fontSize: "1.6rem", fontWeight: 700, color: "var(--ink-900)", marginTop: "0.2em" }}>
-            🤖 {tabCounts.ccar} Exams
-          </div>
-        </div>
-
-        <div className="card" style={{ padding: "1.3em", borderRadius: "var(--radius-lg)", borderLeft: "4px solid var(--accent-500)" }}>
-          <div style={{ fontSize: "0.78rem", color: "var(--ink-500)", textTransform: "uppercase", fontWeight: 700 }}>
-            Primary School (K-2)
-          </div>
-          <div className="mono" style={{ fontSize: "1.6rem", fontWeight: 700, color: "var(--ink-900)", marginTop: "0.2em" }}>
-            🎒 {tabCounts.primary} Assessments
-          </div>
-        </div>
-
-        <div className="card" style={{ padding: "1.3em", borderRadius: "var(--radius-lg)", borderLeft: "4px solid var(--warn-500)" }}>
-          <div style={{ fontSize: "0.78rem", color: "var(--ink-500)", textTransform: "uppercase", fontWeight: 700 }}>
-            Draft Papers
-          </div>
-          <div className="mono" style={{ fontSize: "1.6rem", fontWeight: 700, color: "var(--ink-900)", marginTop: "0.2em" }}>
-            📝 {tabCounts.draft} Pending
-          </div>
-        </div>
-      </div>
-
-      {/* Navigation Filter Tabs & Search Bar */}
-      <div
-        style={{
+          padding: "1em 1.4em",
+          marginBottom: "1.6em",
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
           flexWrap: "wrap",
-          gap: "1.2em",
-          marginBottom: "1.6em",
+          gap: "1em",
         }}
       >
-        <div style={{ display: "flex", background: "var(--paper-100)", padding: "4px", borderRadius: "var(--radius-md)", border: "1px solid var(--line)", flexWrap: "wrap", gap: "4px" }}>
-          <button
-            onClick={() => setActiveTab("all")}
-            style={{
-              border: "none",
-              background: activeTab === "all" ? "#fff" : "transparent",
-              color: activeTab === "all" ? "var(--ink-900)" : "var(--ink-500)",
-              fontWeight: activeTab === "all" ? 700 : 500,
-              padding: "0.45em 0.9em",
-              borderRadius: "var(--radius-sm)",
-              fontSize: "0.85rem",
-              cursor: "pointer",
-              boxShadow: activeTab === "all" ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
-            }}
-          >
-            🌟 All ({tabCounts.all})
-          </button>
-          <button
-            onClick={() => setActiveTab("ccar")}
-            style={{
-              border: "none",
-              background: activeTab === "ccar" ? "#fff" : "transparent",
-              color: activeTab === "ccar" ? "var(--ink-900)" : "var(--ink-500)",
-              fontWeight: activeTab === "ccar" ? 700 : 500,
-              padding: "0.45em 0.9em",
-              borderRadius: "var(--radius-sm)",
-              fontSize: "0.85rem",
-              cursor: "pointer",
-              boxShadow: activeTab === "ccar" ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
-            }}
-          >
-            🤖 Claude Architect ({tabCounts.ccar})
-          </button>
-          <button
-            onClick={() => setActiveTab("primary")}
-            style={{
-              border: "none",
-              background: activeTab === "primary" ? "#fff" : "transparent",
-              color: activeTab === "primary" ? "var(--ink-900)" : "var(--ink-500)",
-              fontWeight: activeTab === "primary" ? 700 : 500,
-              padding: "0.45em 0.9em",
-              borderRadius: "var(--radius-sm)",
-              fontSize: "0.85rem",
-              cursor: "pointer",
-              boxShadow: activeTab === "primary" ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
-            }}
-          >
-            🎒 Primary School ({tabCounts.primary})
-          </button>
-          <button
-            onClick={() => setActiveTab("published")}
-            style={{
-              border: "none",
-              background: activeTab === "published" ? "#fff" : "transparent",
-              color: activeTab === "published" ? "var(--ink-900)" : "var(--ink-500)",
-              fontWeight: activeTab === "published" ? 700 : 500,
-              padding: "0.45em 0.9em",
-              borderRadius: "var(--radius-sm)",
-              fontSize: "0.85rem",
-              cursor: "pointer",
-              boxShadow: activeTab === "published" ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
-            }}
-          >
-            ✓ Published ({tabCounts.published})
-          </button>
-          <button
-            onClick={() => setActiveTab("draft")}
-            style={{
-              border: "none",
-              background: activeTab === "draft" ? "#fff" : "transparent",
-              color: activeTab === "draft" ? "var(--ink-900)" : "var(--ink-500)",
-              fontWeight: activeTab === "draft" ? 700 : 500,
-              padding: "0.45em 0.9em",
-              borderRadius: "var(--radius-sm)",
-              fontSize: "0.85rem",
-              cursor: "pointer",
-              boxShadow: activeTab === "draft" ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
-            }}
-          >
-            📝 Drafts ({tabCounts.draft})
-          </button>
+        <div style={{ display: "inline-flex", background: "var(--paper-100)", padding: "4px", borderRadius: "var(--radius-sm)", gap: "4px", flexWrap: "wrap" }}>
+          {[
+            { key: "all", label: "🌟 All Exams" },
+            { key: "ccar", label: "🤖 Claude Architecture" },
+            { key: "primary", label: "🎒 Primary School" },
+            { key: "published", label: "✓ Published" },
+            { key: "draft", label: "📝 Drafts" },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              style={{
+                border: "none",
+                background: activeTab === tab.key ? "#fff" : "transparent",
+                color: activeTab === tab.key ? "var(--ink-900)" : "var(--ink-600)",
+                fontWeight: activeTab === tab.key ? 700 : 500,
+                padding: "0.45em 0.9em",
+                borderRadius: "var(--radius-sm)",
+                fontSize: "0.84rem",
+                cursor: "pointer",
+                boxShadow: activeTab === tab.key ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                transition: "all 0.15s ease",
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
         <div style={{ minWidth: "260px" }}>
           <input
-            type="text"
             className="input"
-            placeholder="🔍 Search exam titles..."
+            type="text"
+            placeholder="🔍 Search exams by title..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ fontSize: "0.88rem" }}
+            style={{ fontSize: "0.88rem", padding: "0.45em 0.8em" }}
           />
         </div>
       </div>
 
-      {!tests && <p style={{ color: "var(--ink-500)", textAlign: "center", padding: "2em 0" }}>Loading examination catalog…</p>}
-
-      {tests && filteredTests.length === 0 && (
+      {/* Tests Grid */}
+      {!tests ? (
+        <p style={{ color: "var(--ink-500)" }}>Loading examination catalog…</p>
+      ) : filteredTests.length === 0 ? (
         <div className="card" style={{ padding: "3.5em 2em", textAlign: "center", color: "var(--ink-500)" }}>
           <div style={{ fontSize: "2rem", marginBottom: "0.4em" }}>🔍</div>
           <h3 style={{ color: "var(--ink-700)", margin: "0 0 0.3em 0" }}>No examination papers found</h3>
-          <p style={{ margin: 0, fontSize: "0.92rem" }}>
-            Try adjusting your search query or tab filter.
-          </p>
+          <p style={{ margin: 0, fontSize: "0.9rem" }}>Click '+ Create New Exam Paper' to author an assessment.</p>
         </div>
-      )}
+      ) : (
+        <div style={{ display: "grid", gap: "1.2em" }}>
+          {filteredTests.map((t) => {
+            const isCCAR = t.title.toLowerCase().includes("ccar") || t.title.toLowerCase().includes("claude");
+            const durationMins = Math.round((t.totalDurationSeconds || 0) / 60);
 
-      {/* Grid of Rich Examination Cards */}
-      <div style={{ display: "grid", gap: "1.4em" }}>
-        {filteredTests.map((t) => {
-          const isCCAR = t.title.includes("CCAR-F") || t.title.includes("Claude");
-          const isPrimary = t.title.includes("Class 1") || t.title.includes("Class 2");
-          const isPublished = t.status === "PUBLISHED";
-          const isDraft = t.status === "DRAFT";
-
-          return (
-            <div
-              key={t.id}
-              className="card card-interactive"
-              style={{
-                padding: "1.6em 2em",
-                borderRadius: "var(--radius-lg)",
-                border: "1px solid var(--line)",
-                display: "grid",
-                gap: "1em",
-              }}
-            >
-              {/* Card Top: Badges + Publication Toggle */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.6em" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.6em", flexWrap: "wrap" }}>
-                  <span className={`badge ${isCCAR ? "badge-indigo" : isPrimary ? "badge-purple" : "badge-neutral"}`} style={{ fontWeight: 700 }}>
-                    {isCCAR ? "🤖 Claude Certification" : isPrimary ? "🎒 Primary School" : "📝 General Exam"}
-                  </span>
-
-                  <span className="badge badge-neutral" style={{ fontSize: "0.75rem" }}>
-                    {t.targetGrade === "GRADE_1" ? "🎯 Grade 1 (Class 1)" : t.targetGrade === "GRADE_2" ? "🎯 Grade 2 (Class 2)" : t.targetGrade === "PROFESSIONAL" ? "🎯 Masters / Professional" : "🎯 Open to All"}
-                  </span>
-
-                  <span className={`badge ${isPublished ? "badge-ok" : isDraft ? "badge-warn" : "badge-neutral"}`} style={{ fontWeight: 700 }}>
-                    {isPublished ? "● PUBLISHED" : isDraft ? "○ DRAFT" : "ARCHIVED"}
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", alignItems: "center", gap: "0.8em" }}>
-                  <span className="mono" style={{ fontSize: "0.82rem", color: "var(--ink-500)" }}>
-                    Created: {new Date(t.createdAt).toLocaleDateString()}
-                  </span>
-                </div>
-              </div>
-
-              {/* Title & Description */}
-              <div>
-                <h2 style={{ fontSize: "1.25rem", margin: "0 0 0.35em 0", color: "var(--ink-900)", lineHeight: "1.35" }}>
-                  {t.title}
-                </h2>
-                {t.description && (
-                  <p style={{ color: "var(--ink-500)", margin: 0, fontSize: "0.9rem", lineHeight: "1.5" }}>
-                    {t.description}
-                  </p>
-                )}
-              </div>
-
-              {/* Specs Bar */}
+            return (
               <div
+                key={t.id}
+                className="card card-interactive"
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
-                  gap: "0.8em",
-                  background: "var(--paper-100)",
-                  padding: "0.8em 1.2em",
-                  borderRadius: "var(--radius-sm)",
+                  padding: "1.6em 1.8em",
+                  borderRadius: "var(--radius-lg)",
                   border: "1px solid var(--line)",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: "1.2em",
                 }}
               >
                 <div>
-                  <div style={{ fontSize: "0.7rem", color: "var(--ink-500)", textTransform: "uppercase", fontWeight: 700 }}>
-                    Questions
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.6em", marginBottom: "0.4em", flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 700, fontSize: "1.15rem", color: "var(--ink-900)" }}>
+                      {t.title}
+                    </span>
+                    <span className={`badge ${t.status === "PUBLISHED" ? "badge-ok" : "badge-warn"}`}>
+                      {t.status === "PUBLISHED" ? "✓ Published" : "📝 Draft"}
+                    </span>
+                    <span className={`badge ${isCCAR ? "badge-purple" : "badge-indigo"}`} style={{ fontSize: "0.72rem" }}>
+                      {isCCAR ? "🤖 Professional Architecture" : "🎒 Primary Track"}
+                    </span>
+                    {t.targetGrade && (
+                      <span className="badge badge-neutral" style={{ fontSize: "0.72rem" }}>
+                        🎯 {t.targetGrade.replace("_", " ")}
+                      </span>
+                    )}
                   </div>
-                  <div className="mono" style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--ink-900)" }}>
-                    📝 {t.questionCount} Items
+
+                  <p style={{ color: "var(--ink-600)", margin: "0 0 0.6em 0", fontSize: "0.88rem", maxWidth: "680px", lineHeight: "1.4" }}>
+                    {t.description || "No description provided."}
+                  </p>
+
+                  <div style={{ display: "flex", gap: "1.2em", fontSize: "0.82rem", color: "var(--ink-500)", flexWrap: "wrap" }}>
+                    <span>📚 <strong>{t.questionCount}</strong> Questions</span>
+                    <span>⏱️ <strong>{durationMins}</strong> Mins Duration</span>
+                    <span>🎲 Shuffle: <strong>{t.shuffleQuestions ? "Enabled" : "Off"}</strong></span>
                   </div>
                 </div>
 
-                <div>
-                  <div style={{ fontSize: "0.7rem", color: "var(--ink-500)", textTransform: "uppercase", fontWeight: 700 }}>
-                    Attempts Taken
-                  </div>
-                  <div className="mono" style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--ink-900)" }}>
-                    👥 {t.attemptCount} Candidates
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: "0.7rem", color: "var(--ink-500)", textTransform: "uppercase", fontWeight: 700 }}>
-                    Anti-Cheat Shuffle
-                  </div>
-                  <div style={{ fontSize: "0.88rem", fontWeight: 600, color: t.shuffleQuestions ? "var(--ok-600)" : "var(--ink-500)" }}>
-                    {t.shuffleQuestions ? "🔀 Active" : "Disabled"}
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: "0.7rem", color: "var(--ink-500)", textTransform: "uppercase", fontWeight: 700 }}>
-                    Auto-Submit
-                  </div>
-                  <div style={{ fontSize: "0.88rem", fontWeight: 600, color: t.autoSubmit ? "var(--ok-600)" : "var(--ink-500)" }}>
-                    {t.autoSubmit ? "⏱️ Active" : "Disabled"}
-                  </div>
-                </div>
-              </div>
-
-              {/* Action Buttons Footer */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.8em", borderTop: "1px solid var(--line)", paddingTop: "0.8em" }}>
-                <div style={{ display: "flex", gap: "0.6em" }}>
+                <div style={{ display: "flex", gap: "0.6em", alignItems: "center", flexWrap: "wrap" }}>
                   <button
                     className="btn btn-ghost"
-                    style={{ fontSize: "0.84rem", padding: "0.35em 0.8em" }}
+                    style={{ fontSize: "0.84rem", border: "1px solid var(--line)" }}
                     onClick={() => openPreview(t)}
                   >
-                    👁️ Preview Questions
+                    👁️ Preview
                   </button>
 
-                  <button
-                    className="btn btn-ghost"
-                    style={{ fontSize: "0.84rem", padding: "0.35em 0.8em" }}
-                    onClick={() => togglePublishStatus(t)}
-                  >
-                    {isPublished ? "Unpublish to Draft" : "Publish to Portal"}
-                  </button>
-                </div>
-
-                <div style={{ display: "flex", gap: "0.6em" }}>
                   <Link
                     to={`/admin/tests/${t.id}/analytics`}
                     className="btn btn-ghost"
-                    style={{ fontSize: "0.84rem", padding: "0.35em 0.9em", fontWeight: 600, border: "1px solid var(--line)" }}
+                    style={{ fontSize: "0.84rem", border: "1px solid var(--line)" }}
                   >
-                    📊 View Analytics
+                    📊 Analytics
                   </Link>
 
                   <button
-                    className="btn btn-primary"
-                    style={{ fontSize: "0.84rem", padding: "0.35em 1em", fontWeight: 600 }}
+                    className="btn btn-ghost"
+                    style={{ fontSize: "0.84rem", border: "1px solid var(--line)" }}
+                    onClick={() => togglePublishStatus(t)}
+                  >
+                    {t.status === "PUBLISHED" ? "🔒 Unpublish" : "🚀 Publish"}
+                  </button>
+
+                  <button
+                    className="btn btn-ghost"
+                    style={{ fontSize: "0.84rem", border: "1px solid var(--line)", fontWeight: 600 }}
                     onClick={() => startEdit(t)}
                   >
-                    ✏️ Edit Examination
+                    ✏️ Edit
                   </button>
 
                   <button
                     className="btn btn-danger"
-                    style={{ fontSize: "0.84rem", padding: "0.35em 0.8em" }}
+                    style={{ fontSize: "0.84rem", padding: "0.4em 0.8em" }}
                     onClick={() => archive(t.id)}
                   >
-                    🗑️ Archive
+                    🗑️
                   </button>
                 </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
-      {/* Question Preview Modal */}
-      {previewTest && (
+      {/* Full Test Creation / Editing Modal */}
+      {form && (
         <div
           style={{
             position: "fixed",
@@ -967,7 +478,7 @@ export default function TestBuilder() {
             left: 0,
             right: 0,
             bottom: 0,
-            background: "rgba(20, 24, 31, 0.65)",
+            background: "rgba(20, 24, 31, 0.7)",
             backdropFilter: "blur(4px)",
             display: "flex",
             alignItems: "center",
@@ -976,12 +487,517 @@ export default function TestBuilder() {
             padding: "1.5em",
           }}
         >
-          <div className="card" style={{ width: "100%", maxWidth: "800px", maxHeight: "85vh", overflowY: "auto", padding: "2.2em", borderRadius: "var(--radius-lg)" }}>
+          <div className="card" style={{ width: "100%", maxWidth: "1020px", maxHeight: "92vh", overflowY: "auto", padding: "2.2em", borderRadius: "var(--radius-lg)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.4em" }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: "1.4rem" }}>
+                  {form.id ? "Edit Examination Paper" : "Create New Examination Paper"}
+                </h2>
+                <span style={{ fontSize: "0.85rem", color: "var(--ink-500)" }}>
+                  Configure assessment parameters, anti-cheat options, and assemble the question pool.
+                </span>
+              </div>
+              <button
+                onClick={() => setForm(null)}
+                style={{ background: "none", border: "none", fontSize: "1.3rem", cursor: "pointer", color: "var(--ink-500)" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={save} style={{ display: "grid", gap: "1.3em" }}>
+              {/* Paper Settings */}
+              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "1em" }}>
+                <div>
+                  <label className="label">Exam Paper Title *</label>
+                  <input
+                    className="input"
+                    required
+                    placeholder="e.g. Claude Certified Architect Practice Exam 1"
+                    value={form.title}
+                    onChange={(e) => setForm({ ...form, title: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label className="label">Target Grade / Eligibility *</label>
+                  <select
+                    className="input"
+                    value={form.targetGrade || "PROFESSIONAL"}
+                    onChange={(e) => setForm({ ...form, targetGrade: e.target.value })}
+                  >
+                    <option value="PROFESSIONAL">💼 Masters / Professional</option>
+                    <option value="GRADE_2">🎒 Grade 2 (Class 2)</option>
+                    <option value="GRADE_1">🎒 Grade 1 (Class 1)</option>
+                    <option value="ALL">🌐 Open to All</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="label">Initial Status</label>
+                  <select
+                    className="input"
+                    value={form.status}
+                    onChange={(e) => setForm({ ...form, status: e.target.value })}
+                  >
+                    <option value="DRAFT">📝 Draft</option>
+                    <option value="PUBLISHED">✓ Published</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="label">Description / Instructions</label>
+                <textarea
+                  className="input"
+                  rows={2}
+                  placeholder="Instructions for students before starting the test..."
+                  value={form.description}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                />
+              </div>
+
+              {/* Toggles */}
+              <div style={{ display: "flex", gap: "2em", background: "var(--paper-100)", padding: "0.9em 1.2em", borderRadius: "var(--radius-md)", border: "1px solid var(--line)" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "0.5em", cursor: "pointer", fontWeight: 600, fontSize: "0.88rem" }}>
+                  <input
+                    type="checkbox"
+                    checked={form.shuffleQuestions}
+                    onChange={(e) => setForm({ ...form, shuffleQuestions: e.target.checked })}
+                  />
+                  🎲 Shuffle Question Order per Candidate (Anti-Cheat)
+                </label>
+
+                <label style={{ display: "flex", alignItems: "center", gap: "0.5em", cursor: "pointer", fontWeight: 600, fontSize: "0.88rem" }}>
+                  <input
+                    type="checkbox"
+                    checked={form.autoSubmit}
+                    onChange={(e) => setForm({ ...form, autoSubmit: e.target.checked })}
+                  />
+                  ⏱️ Enforce Auto-Submit on Timer Expiry
+                </label>
+              </div>
+
+              {/* Question Pool Builder Tabs: Manual Selection vs Auto-Generator */}
+              <div style={{ borderTop: "2px solid var(--line)", paddingTop: "1.2em" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1em", flexWrap: "wrap", gap: "0.8em" }}>
+                  <div style={{ display: "inline-flex", background: "var(--paper-100)", padding: "4px", borderRadius: "var(--radius-sm)", gap: "4px" }}>
+                    <button
+                      type="button"
+                      onClick={() => setBuilderTab("MANUAL")}
+                      style={{
+                        border: "none",
+                        background: builderTab === "MANUAL" ? "#fff" : "transparent",
+                        color: builderTab === "MANUAL" ? "var(--ink-900)" : "var(--ink-500)",
+                        fontWeight: builderTab === "MANUAL" ? 700 : 500,
+                        padding: "0.45em 0.9em",
+                        borderRadius: "var(--radius-sm)",
+                        fontSize: "0.84rem",
+                        cursor: "pointer",
+                        boxShadow: builderTab === "MANUAL" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                      }}
+                    >
+                      📋 Manual Question Selection
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setBuilderTab("AUTO_GENERATOR")}
+                      style={{
+                        border: "none",
+                        background: builderTab === "AUTO_GENERATOR" ? "#fff" : "transparent",
+                        color: builderTab === "AUTO_GENERATOR" ? "var(--ink-900)" : "var(--ink-500)",
+                        fontWeight: builderTab === "AUTO_GENERATOR" ? 700 : 500,
+                        padding: "0.45em 0.9em",
+                        borderRadius: "var(--radius-sm)",
+                        fontSize: "0.84rem",
+                        cursor: "pointer",
+                        boxShadow: builderTab === "AUTO_GENERATOR" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                      }}
+                    >
+                      ⚡ Weightage & Blueprint Auto-Generator
+                    </button>
+                  </div>
+
+                  {/* Summary Badges */}
+                  <div style={{ display: "flex", gap: "0.8em", alignItems: "center" }}>
+                    <span className="badge badge-indigo" style={{ fontSize: "0.82rem", fontWeight: 700 }}>
+                      Selected: {form.selectedIds.length} Questions
+                    </span>
+                    <span className="mono badge badge-neutral" style={{ fontSize: "0.82rem" }}>
+                      ⏱️ {Math.round(totalDuration(form.selectedIds, form.overrides, questionsById) / 60)} mins
+                    </span>
+                    <span className="mono badge badge-neutral" style={{ fontSize: "0.82rem" }}>
+                      ⚖️ {totalMarks(form.selectedIds, form.overrides, questionsById)} marks
+                    </span>
+                  </div>
+                </div>
+
+                {/* TAB 1: Weightage & Blueprint Auto-Generator */}
+                {builderTab === "AUTO_GENERATOR" && (
+                  <div style={{ background: "var(--paper-100)", padding: "1.4em", borderRadius: "var(--radius-md)", border: "1px solid var(--line)", marginBottom: "1.2em" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1em", flexWrap: "wrap", gap: "0.8em" }}>
+                      <div>
+                        <strong style={{ fontSize: "0.95rem", color: "var(--ink-900)" }}>
+                          ⚡ Weightage-Based Blueprint Question Allocator
+                        </strong>
+                        <div style={{ fontSize: "0.82rem", color: "var(--ink-500)" }}>
+                          Set percentage allocations across subjects and domains. The engine randomly samples and shuffles matching questions until 100% distribution is achieved.
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.6em" }}>
+                        <label className="label" style={{ margin: 0, fontWeight: 700 }}>Total Questions to Pick:</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="200"
+                          className="input"
+                          style={{ width: "90px", fontWeight: 700, padding: "0.35em 0.6em" }}
+                          value={autoTotalCount}
+                          onChange={(e) => setAutoTotalCount(Math.max(1, Number(e.target.value)))}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Weightage Progress Bar & Live Validation Alert */}
+                    <div style={{ marginBottom: "1.2em" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.4em", fontSize: "0.84rem" }}>
+                        <span style={{ fontWeight: 700, color: isWeightageValid ? "var(--ok-500)" : "var(--danger-500)" }}>
+                          {isWeightageValid
+                            ? "✓ Total Weightage: Exactly 100% Configured (Ready to Generate)"
+                            : totalWeightagePercent < 100
+                            ? `⚠️ Total Weightage: ${totalWeightagePercent}% / 100% (Add ${100 - totalWeightagePercent}% more)`
+                            : `⚠️ Total Weightage: ${totalWeightagePercent}% / 100% (Exceeds 100% by ${totalWeightagePercent - 100}%)`}
+                        </span>
+                        <span className="mono" style={{ fontWeight: 700 }}>{totalWeightagePercent}% / 100%</span>
+                      </div>
+
+                      <div style={{ height: "8px", background: "#e2e8f0", borderRadius: "999px", overflow: "hidden" }}>
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${Math.min(100, totalWeightagePercent)}%`,
+                            background: isWeightageValid ? "var(--ok-500)" : totalWeightagePercent > 100 ? "var(--danger-500)" : "var(--brass-500)",
+                            transition: "all 0.2s ease",
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Blueprint Rules Table */}
+                    <div style={{ display: "grid", gap: "0.6em", marginBottom: "1em" }}>
+                      {autoRules.map((rule, rIdx) => {
+                        const calculatedCount = Math.round((Number(rule.percentage) / 100) * autoTotalCount);
+
+                        const subjectCategories = categories.filter((c) => !c.parentId && (!rule.subject || rule.subject === "ALL" || c.subject === rule.subject));
+
+                        return (
+                          <div
+                            key={rIdx}
+                            style={{
+                              background: "#fff",
+                              padding: "0.8em 1em",
+                              borderRadius: "var(--radius-sm)",
+                              border: "1px solid var(--line)",
+                              display: "grid",
+                              gridTemplateColumns: "1.4fr 1.4fr 1.2fr 1fr auto",
+                              gap: "0.8em",
+                              alignItems: "center",
+                            }}
+                          >
+                            {/* Subject */}
+                            <div>
+                              <label className="label" style={{ fontSize: "0.72rem" }}>Subject</label>
+                              <select
+                                className="input"
+                                style={{ fontSize: "0.82rem", padding: "0.35em" }}
+                                value={rule.subject}
+                                onChange={(e) => updateAutoRule(rIdx, { subject: e.target.value })}
+                              >
+                                <option value="ALL">🌐 Any Subject</option>
+                                <option value="Claude Architecture">🤖 Claude Architecture</option>
+                                <option value="Mathematics">📐 Mathematics</option>
+                                <option value="English">📖 English</option>
+                                <option value="Computer Science">💻 Computer Science</option>
+                              </select>
+                            </div>
+
+                            {/* Category */}
+                            <div>
+                              <label className="label" style={{ fontSize: "0.72rem" }}>Category</label>
+                              <select
+                                className="input"
+                                style={{ fontSize: "0.82rem", padding: "0.35em" }}
+                                value={rule.categoryId}
+                                onChange={(e) => updateAutoRule(rIdx, { categoryId: e.target.value })}
+                              >
+                                <option value="ALL">📂 All Categories in Subject</option>
+                                {subjectCategories.map((c) => (
+                                  <option key={c.id} value={c.id}>
+                                    📂 {c.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {/* Difficulty */}
+                            <div>
+                              <label className="label" style={{ fontSize: "0.72rem" }}>Difficulty</label>
+                              <select
+                                className="input"
+                                style={{ fontSize: "0.82rem", padding: "0.35em" }}
+                                value={rule.difficulty}
+                                onChange={(e) => updateAutoRule(rIdx, { difficulty: e.target.value })}
+                              >
+                                <option value="ALL">⭐ Any Difficulty</option>
+                                <option value="EASY">Easy</option>
+                                <option value="MEDIUM">Medium</option>
+                                <option value="HARD">Hard</option>
+                              </select>
+                            </div>
+
+                            {/* Percentage */}
+                            <div>
+                              <label className="label" style={{ fontSize: "0.72rem" }}>Weightage %</label>
+                              <div style={{ display: "flex", alignItems: "center", gap: "0.3em" }}>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="100"
+                                  className="input"
+                                  style={{ width: "65px", fontWeight: 700, padding: "0.35em", fontSize: "0.84rem" }}
+                                  value={rule.percentage}
+                                  onChange={(e) => updateAutoRule(rIdx, { percentage: Number(e.target.value) })}
+                                />
+                                <span style={{ fontSize: "0.78rem", color: "var(--ink-500)" }}>
+                                  % (~{calculatedCount} Qs)
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Delete Rule */}
+                            <div style={{ paddingTop: "1.1em" }}>
+                              <button
+                                type="button"
+                                className="btn btn-ghost"
+                                style={{ color: "var(--danger-500)", padding: "0.3em 0.5em" }}
+                                onClick={() => removeAutoRule(rIdx)}
+                                title="Remove Rule"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Action Bar for Auto Generator */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.8em" }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={addAutoRule}
+                        style={{ background: "#fff", border: "1px solid var(--line)", fontSize: "0.82rem", fontWeight: 600 }}
+                      >
+                        + Add Category Weightage Rule
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn btn-accent"
+                        disabled={!isWeightageValid || isAutoGenerating}
+                        onClick={executeAutoGeneration}
+                        style={{ fontWeight: 700, padding: "0.55em 1.4em" }}
+                      >
+                        {isAutoGenerating ? "Sampling & Shuffling…" : `🎲 Shuffle & Auto-Generate (${autoTotalCount} Questions)`}
+                      </button>
+                    </div>
+
+                    {/* Generated Breakdown Summary */}
+                    {autoGenSummary && (
+                      <div style={{ marginTop: "1em", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: "var(--radius-sm)", padding: "0.9em 1.1em" }}>
+                        <strong style={{ color: "#166534", fontSize: "0.88rem", display: "block", marginBottom: "0.4em" }}>
+                          🎉 Successfully selected and shuffled {autoGenSummary.totalGenerated} questions across {autoGenSummary.breakdown.length} blueprint rules!
+                        </strong>
+                        <div style={{ display: "grid", gap: "0.3em", fontSize: "0.8rem", color: "#15803d" }}>
+                          {autoGenSummary.breakdown.map((b, idx) => (
+                            <div key={idx}>
+                              • <strong>{b.subject}</strong> ({b.percentage}% weightage): Picked <strong>{b.selectedCount}</strong> questions from {b.availableCount} available in bank.
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 2: Manual Selection & Question Pool Browser */}
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.8em", flexWrap: "wrap", gap: "0.8em" }}>
+                    <div style={{ display: "flex", gap: "0.6em", alignItems: "center", flexWrap: "wrap" }}>
+                      <select
+                        className="input"
+                        style={{ fontSize: "0.82rem", padding: "0.35em 0.6em", width: "auto" }}
+                        value={poolSubjectFilter}
+                        onChange={(e) => {
+                          setPoolSubjectFilter(e.target.value);
+                          setPoolCatFilter("ALL");
+                        }}
+                      >
+                        <option value="ALL">All Subjects</option>
+                        {availableSubjects.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+
+                      <select
+                        className="input"
+                        style={{ fontSize: "0.82rem", padding: "0.35em 0.6em", width: "auto" }}
+                        value={poolCatFilter}
+                        onChange={(e) => setPoolCatFilter(e.target.value)}
+                      >
+                        <option value="ALL">All Categories</option>
+                        {categories
+                          .filter((c) => !c.parentId && (poolSubjectFilter === "ALL" || c.subject === poolSubjectFilter))
+                          .map((c) => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                      </select>
+
+                      <input
+                        type="text"
+                        className="input"
+                        placeholder="Search pool..."
+                        style={{ fontSize: "0.82rem", padding: "0.35em 0.6em", width: "160px" }}
+                        value={poolSearchQuery}
+                        onChange={(e) => setPoolSearchQuery(e.target.value)}
+                      />
+                    </div>
+
+                    <div style={{ display: "flex", gap: "0.6em" }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        style={{ fontSize: "0.78rem", padding: "0.3em 0.6em", border: "1px solid var(--line)" }}
+                        onClick={() => selectAllFiltered(filteredPoolQuestions)}
+                      >
+                        ✓ Select All Filtered ({filteredPoolQuestions.length})
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        style={{ fontSize: "0.78rem", padding: "0.3em 0.6em", border: "1px solid var(--line)" }}
+                        onClick={() => deselectAllFiltered(filteredPoolQuestions)}
+                      >
+                        Deselect All Filtered
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Pool Questions Scrollbox */}
+                  <div
+                    style={{
+                      maxHeight: "360px",
+                      overflowY: "auto",
+                      border: "1px solid var(--line)",
+                      borderRadius: "var(--radius-md)",
+                      padding: "0.8em",
+                      display: "grid",
+                      gap: "0.5em",
+                      background: "var(--paper-100)",
+                    }}
+                  >
+                    {filteredPoolQuestions.map((q, idx) => {
+                      const isSelected = form.selectedIds.includes(q.id);
+
+                      return (
+                        <div
+                          key={q.id}
+                          onClick={() => toggleQuestion(q.id)}
+                          style={{
+                            background: isSelected ? "rgba(201, 150, 47, 0.12)" : "#fff",
+                            border: isSelected ? "1px solid var(--brass-500)" : "1px solid var(--line)",
+                            borderRadius: "var(--radius-sm)",
+                            padding: "0.7em 0.9em",
+                            display: "flex",
+                            alignItems: "flex-start",
+                            gap: "0.8em",
+                            cursor: "pointer",
+                            transition: "all 0.12s ease",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => {}} // handled by parent onClick
+                            style={{ marginTop: "0.25em", cursor: "pointer" }}
+                          />
+
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", gap: "0.4em", alignItems: "center", marginBottom: "0.2em", flexWrap: "wrap" }}>
+                              <span className="mono" style={{ fontSize: "0.72rem", color: "var(--ink-500)" }}>#{idx + 1}</span>
+                              {q.subject && <span className="badge badge-neutral" style={{ fontSize: "0.68rem" }}>{q.subject}</span>}
+                              {q.category && <span className="badge badge-indigo" style={{ fontSize: "0.68rem" }}>{q.category.name}</span>}
+                              {q.subCategory && <span className="badge badge-purple" style={{ fontSize: "0.68rem" }}>{q.subCategory}</span>}
+                              <span className="badge badge-neutral" style={{ fontSize: "0.68rem" }}>{q.difficulty}</span>
+                              {q.imageUrl && <span className="badge badge-accent" style={{ fontSize: "0.68rem" }}>🖼️ Diagram</span>}
+                            </div>
+
+                            <div style={{ fontSize: "0.88rem", fontWeight: isSelected ? 600 : 400, color: "var(--ink-900)", lineHeight: "1.35" }}>
+                              {q.text}
+                            </div>
+                          </div>
+
+                          <div className="mono" style={{ fontSize: "0.78rem", color: "var(--ink-500)", flexShrink: 0 }}>
+                            {q.marks} pt · {q.defaultTimeSeconds}s
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Bottom Actions */}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.8em", marginTop: "0.6em" }}>
+                <button type="button" className="btn btn-ghost" onClick={() => setForm(null)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary" style={{ fontWeight: 700, padding: "0.6em 1.6em" }}>
+                  Save Examination Paper
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Test Preview Modal */}
+      {previewTest && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(20, 24, 31, 0.7)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: "1.5em",
+          }}
+        >
+          <div className="card" style={{ width: "100%", maxWidth: "800px", maxHeight: "90vh", overflowY: "auto", padding: "2.2em", borderRadius: "var(--radius-lg)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.2em" }}>
               <div>
-                <h2 style={{ margin: 0, fontSize: "1.3rem" }}>{previewTest.title}</h2>
-                <span className="mono" style={{ fontSize: "0.82rem", color: "var(--ink-500)" }}>
-                  {previewTest.testQuestions?.length} Questions · Total Duration: {Math.round(previewTest.totalDurationSeconds / 60)} mins
+                <h2 style={{ margin: 0, fontSize: "1.35rem" }}>{previewTest.title}</h2>
+                <span style={{ fontSize: "0.85rem", color: "var(--ink-500)" }}>
+                  {previewTest.testQuestions.length} Questions Pool · Duration: {Math.round((previewTest.totalDurationSeconds || 0) / 60)} Mins
                 </span>
               </div>
               <button
@@ -992,36 +1008,30 @@ export default function TestBuilder() {
               </button>
             </div>
 
-            <div style={{ display: "grid", gap: "0.8em" }}>
-              {previewTest.testQuestions?.map((tq, idx) => {
-                const q = tq.question;
-                return (
-                  <div
-                    key={tq.id}
-                    style={{
-                      padding: "0.9em 1.1em",
-                      border: "1px solid var(--line)",
-                      borderRadius: "var(--radius-sm)",
-                      background: "var(--paper-100)",
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.3em" }}>
-                      <span className="mono" style={{ fontSize: "0.78rem", fontWeight: 700, color: "var(--ink-500)" }}>
-                        Q#{idx + 1}
-                      </span>
-                      <span className="badge badge-neutral" style={{ fontSize: "0.7rem" }}>
-                        {q.category?.name || "General"}
-                      </span>
+            <div style={{ display: "grid", gap: "0.8em", maxHeight: "60vh", overflowY: "auto", paddingRight: "4px" }}>
+              {previewTest.testQuestions.map((tq, idx) => (
+                <div key={tq.id} style={{ background: "var(--paper-100)", padding: "1em 1.2em", borderRadius: "var(--radius-sm)", border: "1px solid var(--line)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.3em" }}>
+                    <div style={{ display: "flex", gap: "0.4em", alignItems: "center" }}>
+                      <span className="mono" style={{ fontSize: "0.82rem", fontWeight: 700 }}>#{idx + 1}</span>
+                      {tq.question.subject && <span className="badge badge-neutral" style={{ fontSize: "0.7rem" }}>{tq.question.subject}</span>}
+                      {tq.question.category && <span className="badge badge-indigo" style={{ fontSize: "0.7rem" }}>{tq.question.category.name}</span>}
                     </div>
-                    <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "var(--ink-900)" }}>{q.text}</div>
-                    {q.solution && (
-                      <div style={{ fontSize: "0.8rem", color: "var(--ink-600)", marginTop: "0.4em" }}>
-                        💡 <strong>Answer:</strong> Choice {q.correctChoice} — {q.solution}
-                      </div>
-                    )}
+                    <span className="mono badge badge-neutral" style={{ fontSize: "0.75rem" }}>
+                      {tq.marksOverride || tq.question.marks} pt
+                    </span>
                   </div>
-                );
-              })}
+                  <div style={{ fontWeight: 600, fontSize: "0.92rem", color: "var(--ink-900)" }}>
+                    {tq.question.text}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.2em" }}>
+              <button className="btn btn-ghost" onClick={() => setPreviewTest(null)}>
+                Close Preview
+              </button>
             </div>
           </div>
         </div>
