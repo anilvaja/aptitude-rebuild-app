@@ -34,9 +34,14 @@ Designed for both **Enterprise Professional Certifications** (e.g., Anthropic Cl
 * **2-Column Interactive Workspace (`/admin/questions`):**
   * **Left Sidebar Tree:** Expandable Parent Categories (`📂`) with indented Child Subcategories (`🔹`) and live count badges.
   * **Top Action Bar:** Quick modal to create top-level Categories or child Subcategories linked to a parent.
+  * **Bulk Import Engine (Excel & CSV):** Upload `.xlsx` or `.csv` files to import hundreds of questions in one click, with auto-category resolution, pre-import preview, and downloadable official sample templates (`.xlsx` & `.csv`).
   * **Rich Question Cards:** Displays Subject > Category > Subcategory breadcrumbs, MCQ choices with the **`✓ Correct Answer`** highlighted in soft green, and collapsible model solutions.
 
-### 6. Comprehensive Post-Test Result & Solution Review
+### 6. Student Roster Bulk Import & Enrollment (`/admin/users`)
+* **Bulk Import Engine (Excel & CSV):** Upload complete student cohorts from `.xlsx` or `.csv` spreadsheets with names, emails, temporary passwords, academic grades, ages, experience, and school affiliations.
+* **Instant Sample Downloads:** Download pre-formatted `sample_students_template.xlsx` and `sample_students_template.csv` directly from the user interface.
+
+### 7. Comprehensive Post-Test Result & Solution Review
 * Complete question-by-question review on `/result/:id` showing student choices, correct answers, domain breakdowns, and detailed architectural explanations.
 
 ---

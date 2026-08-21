@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { api } from "../../api/client";
+import { parseExcelOrCsv, downloadExcel, downloadCSV, SAMPLE_QUESTIONS } from "../../utils/excelImportExport";
 
 const EMPTY_FORM = {
   type: "MCQ",
@@ -29,6 +30,7 @@ export default function QuestionBank() {
   const [form, setForm] = useState(null); // null = list view, object = editing/creating
   const [error, setError] = useState(null);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
   const [expandedParents, setExpandedParents] = useState({});
   const [expandedSolutions, setExpandedSolutions] = useState({});
 
@@ -38,6 +40,13 @@ export default function QuestionBank() {
   const [newCatSubject, setNewCatSubject] = useState("Claude Architecture");
   const [newCatParentId, setNewCatParentId] = useState("");
   const [isAddingCategory, setIsAddingCategory] = useState(false);
+
+  // Bulk Import state
+  const [importFile, setImportFile] = useState(null);
+  const [parsedRows, setParsedRows] = useState([]);
+  const [isParsing, setIsParsing] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
 
   function refresh() {
     api.get("/api/questions").then(setQuestions);
@@ -60,24 +69,64 @@ export default function QuestionBank() {
     setExpandedParents((prev) => ({ ...prev, [parentId]: !prev[parentId] }));
   }
 
+  // Handle file selection and parsing for import
+  async function handleFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImportFile(file);
+    setIsParsing(true);
+    setImportResult(null);
+    setError(null);
+    try {
+      const data = await parseExcelOrCsv(file);
+      setParsedRows(data);
+    } catch (err) {
+      setError(`Failed to read file: ${err.message}`);
+      setParsedRows([]);
+    } finally {
+      setIsParsing(false);
+    }
+  }
+
+  async function executeBulkImport() {
+    if (parsedRows.length === 0) return;
+    setIsImporting(true);
+    setError(null);
+    setImportResult(null);
+    try {
+      const res = await api.post("/api/questions/bulk-import", { questions: parsedRows });
+      setImportResult(res);
+      refresh();
+      if (res.importedCount > 0 && res.errors?.length === 0) {
+        setTimeout(() => {
+          setShowImportModal(false);
+          setImportFile(null);
+          setParsedRows([]);
+          setImportResult(null);
+        }, 2000);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
   // Build hierarchical category tree with subcategories & question counts
   const { categoryTree, totalQuestionsCount } = useMemo(() => {
     if (!questions || !categories) return { categoryTree: {}, totalQuestionsCount: 0 };
 
     const total = questions.length;
 
-    // 1. Separate top-level categories and child subcategories
     const parentCats = categories.filter((c) => !c.parentId);
     const childCats = categories.filter((c) => c.parentId);
 
-    // Map parentId -> list of child categories
     const childrenByParent = {};
     childCats.forEach((child) => {
       if (!childrenByParent[child.parentId]) childrenByParent[child.parentId] = [];
       childrenByParent[child.parentId].push(child);
     });
 
-    // 2. Count questions per category ID & subCategory string
     const countByCatId = {};
     const countByCatAndSub = {};
     let uncategorizedCount = 0;
@@ -94,17 +143,13 @@ export default function QuestionBank() {
       }
     });
 
-    // 3. Group by Subject
     const tree = {};
 
     parentCats.forEach((parent) => {
       const subject = parent.subject || "Claude Architecture";
       if (!tree[subject]) tree[subject] = [];
 
-      // Get registered children
       const registeredChildren = childrenByParent[parent.id] || [];
-
-      // Also find any subcategories present in questions for this parent
       const subcatSet = new Map();
       registeredChildren.forEach((ch) => subcatSet.set(ch.name.toLowerCase(), { id: ch.id, name: ch.name }));
 
@@ -117,7 +162,6 @@ export default function QuestionBank() {
           }
         });
 
-      // Build child objects with counts
       const subcategories = Array.from(subcatSet.values()).map((sub) => {
         const key = `${parent.id}:::${sub.name.trim().toLowerCase()}`;
         return {
@@ -128,7 +172,6 @@ export default function QuestionBank() {
         };
       });
 
-      // Total count for parent = direct questions attached to parent
       const parentCount = countByCatId[parent.id] || 0;
 
       tree[subject].push({
@@ -158,14 +201,11 @@ export default function QuestionBank() {
   const filteredQuestions = useMemo(() => {
     if (!questions) return [];
     return questions.filter((q) => {
-      // 1. Hierarchy Filter
       if (selectedFilter.type === "ALL") {
         // match all
       } else if (selectedFilter.type === "PARENT") {
-        // Matches all questions whose categoryId is this parent
         if (q.categoryId !== selectedFilter.id) return false;
       } else if (selectedFilter.type === "SUBCATEGORY") {
-        // Matches questions under this parent category with this subCategory name or child categoryId
         const matchParent = q.categoryId === selectedFilter.parentId;
         const matchSubName = q.subCategory?.trim().toLowerCase() === selectedFilter.name?.trim().toLowerCase();
         const matchChildCatId = q.categoryId === selectedFilter.id;
@@ -174,7 +214,6 @@ export default function QuestionBank() {
         if (q.categoryId) return false;
       }
 
-      // 2. Search Query Filter
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
         const matchText = q.text?.toLowerCase().includes(query);
@@ -261,16 +300,13 @@ export default function QuestionBank() {
     }
   }
 
-  // Available subcategories for the category selected in question form
   const availableSubcategoriesForForm = useMemo(() => {
     if (!form || !form.categoryId) return [];
     const parent = categories.find((c) => c.id === form.categoryId);
     if (!parent) return [];
 
     const subcats = new Set();
-    // Child categories in DB
     categories.filter((c) => c.parentId === parent.id).forEach((c) => subcats.add(c.name));
-    // Questions with subcategories under this parent
     if (questions) {
       questions
         .filter((q) => q.categoryId === parent.id && q.subCategory)
@@ -288,11 +324,24 @@ export default function QuestionBank() {
             Question Bank Management
           </h1>
           <p style={{ color: "var(--ink-500)", margin: 0, fontSize: "0.92rem" }}>
-            Browse parent categories & child subcategories in a hierarchical tree, author questions, and manage taxonomy.
+            Browse hierarchy tree, author questions, and bulk import question banks via Excel (.xlsx) or CSV.
           </p>
         </div>
 
         <div style={{ display: "flex", gap: "0.8em", alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              setShowImportModal(true);
+              setImportFile(null);
+              setParsedRows([]);
+              setImportResult(null);
+            }}
+            style={{ border: "1px solid var(--line)", background: "#fff", fontWeight: 600 }}
+          >
+            📥 Import Questions (Excel / CSV)
+          </button>
+
           <button
             className="btn btn-ghost"
             onClick={() => setShowCategoryModal(true)}
@@ -320,6 +369,180 @@ export default function QuestionBank() {
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+
+      {/* Bulk Import Questions Modal */}
+      {showImportModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(20, 24, 31, 0.65)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: "1.5em",
+          }}
+        >
+          <div className="card" style={{ width: "100%", maxWidth: "840px", maxHeight: "90vh", overflowY: "auto", padding: "2.2em", borderRadius: "var(--radius-lg)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.2em" }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: "1.35rem" }}>Bulk Import Questions (Excel / CSV)</h2>
+                <p style={{ color: "var(--ink-500)", margin: "0.2em 0 0 0", fontSize: "0.88rem" }}>
+                  Upload an Excel (.xlsx) or CSV file with your questions. Missing categories are auto-created.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowImportModal(false)}
+                style={{ background: "none", border: "none", fontSize: "1.3rem", cursor: "pointer", color: "var(--ink-500)" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Download Sample Templates Banner */}
+            <div
+              style={{
+                background: "var(--paper-100)",
+                padding: "1.2em 1.4em",
+                borderRadius: "var(--radius-md)",
+                border: "1px solid var(--line)",
+                marginBottom: "1.4em",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "1em",
+              }}
+            >
+              <div>
+                <strong style={{ fontSize: "0.92rem", display: "block", color: "var(--ink-900)" }}>
+                  Need the sample format template?
+                </strong>
+                <span style={{ fontSize: "0.82rem", color: "var(--ink-500)" }}>
+                  Includes pre-configured columns: subject, category, subCategory, type, text, choiceA-E, correctChoice, solution, marks, negativeMarks, defaultTimeSeconds, difficulty.
+                </span>
+              </div>
+
+              <div style={{ display: "flex", gap: "0.6em" }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => downloadExcel(SAMPLE_QUESTIONS, "sample_questions_template", "Questions")}
+                  style={{ background: "#fff", border: "1px solid var(--line)", fontSize: "0.82rem", fontWeight: 600 }}
+                >
+                  📊 Download Excel (.xlsx)
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => downloadCSV(SAMPLE_QUESTIONS, "sample_questions_template")}
+                  style={{ background: "#fff", border: "1px solid var(--line)", fontSize: "0.82rem", fontWeight: 600 }}
+                >
+                  📄 Download CSV (.csv)
+                </button>
+              </div>
+            </div>
+
+            {/* File Upload Drop Area */}
+            <div style={{ marginBottom: "1.4em" }}>
+              <label className="label" style={{ fontWeight: 700 }}>
+                Select File to Import (.xlsx, .xls, .csv)
+              </label>
+              <input
+                type="file"
+                accept=".xlsx, .xls, .csv"
+                className="input"
+                onChange={handleFileSelect}
+                style={{ padding: "0.6em", background: "#fff" }}
+              />
+            </div>
+
+            {isParsing && <p style={{ color: "var(--ink-500)" }}>Reading and validating file data…</p>}
+
+            {/* Parsed Rows Preview */}
+            {parsedRows.length > 0 && (
+              <div style={{ marginBottom: "1.4em" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.6em" }}>
+                  <strong style={{ fontSize: "0.92rem" }}>
+                    ✓ Ready to Import: {parsedRows.length} Questions Detected
+                  </strong>
+                  <span className="mono" style={{ fontSize: "0.8rem", color: "var(--ink-500)" }}>
+                    Showing first {Math.min(parsedRows.length, 3)} rows
+                  </span>
+                </div>
+
+                <div style={{ display: "grid", gap: "0.6em", maxHeight: "240px", overflowY: "auto", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", padding: "0.6em", background: "var(--paper-100)" }}>
+                  {parsedRows.slice(0, 3).map((r, i) => (
+                    <div key={i} style={{ background: "#fff", padding: "0.7em", borderRadius: "var(--radius-sm)", border: "1px solid var(--line)", fontSize: "0.82rem" }}>
+                      <div style={{ display: "flex", gap: "0.4em", marginBottom: "0.2em" }}>
+                        <span className="badge badge-neutral" style={{ fontSize: "0.68rem" }}>Row #{i + 1}</span>
+                        <span className="badge badge-indigo" style={{ fontSize: "0.68rem" }}>{r.subject || "General"}</span>
+                        <span className="badge badge-purple" style={{ fontSize: "0.68rem" }}>{r.category || "Uncategorized"}</span>
+                        <span className="badge badge-ok" style={{ fontSize: "0.68rem" }}>Ans: {r.correctChoice || "A"}</span>
+                      </div>
+                      <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>{r.text}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Import Status / Errors Display */}
+            {importResult && (
+              <div style={{ marginBottom: "1.4em" }}>
+                <div
+                  style={{
+                    padding: "0.9em 1.2em",
+                    borderRadius: "var(--radius-md)",
+                    background: importResult.importedCount > 0 ? "rgba(34, 197, 94, 0.1)" : "rgba(239, 68, 68, 0.1)",
+                    border: `1px solid ${importResult.importedCount > 0 ? "var(--ok-500)" : "var(--danger-500)"}`,
+                    color: "var(--ink-900)",
+                    fontWeight: 600,
+                  }}
+                >
+                  🎉 Successfully imported {importResult.importedCount} questions!
+                </div>
+
+                {importResult.errors?.length > 0 && (
+                  <div style={{ marginTop: "0.8em", background: "#fef2f2", padding: "0.8em", borderRadius: "var(--radius-sm)", border: "1px solid #f87171" }}>
+                    <strong style={{ color: "#991b1b", fontSize: "0.85rem", display: "block", marginBottom: "0.4em" }}>
+                      ⚠️ Warnings / Errors on {importResult.errors.length} Rows:
+                    </strong>
+                    <div style={{ display: "grid", gap: "0.3em", maxHeight: "120px", overflowY: "auto", fontSize: "0.78rem", color: "#7f1d1d" }}>
+                      {importResult.errors.map((err, idx) => (
+                        <div key={idx}>
+                          • <strong>Row {err.row}:</strong> {err.error}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.8em" }}>
+              <button type="button" className="btn btn-ghost" onClick={() => setShowImportModal(false)}>
+                Close
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={parsedRows.length === 0 || isImporting}
+                onClick={executeBulkImport}
+                style={{ fontWeight: 700, padding: "0.6em 1.6em" }}
+              >
+                {isImporting ? "Importing…" : `Confirm Import (${parsedRows.length} Questions)`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Category / Subcategory Creation Modal */}
       {showCategoryModal && (
@@ -351,7 +574,6 @@ export default function QuestionBank() {
             </div>
 
             <form onSubmit={handleCreateCategory} style={{ display: "grid", gap: "1.1em" }}>
-              {/* Type Selector (Parent vs Child) */}
               <div style={{ display: "flex", gap: "1em", background: "var(--paper-100)", padding: "0.8em 1em", borderRadius: "var(--radius-md)", border: "1px solid var(--line)" }}>
                 <label style={{ display: "flex", alignItems: "center", gap: "0.4em", cursor: "pointer", fontWeight: !isSubcategoryMode ? 700 : 400 }}>
                   <input
@@ -374,7 +596,6 @@ export default function QuestionBank() {
                 </label>
               </div>
 
-              {/* Parent Category Selector if Subcategory */}
               {isSubcategoryMode && (
                 <div>
                   <label className="label">Parent Category *</label>
@@ -472,7 +693,6 @@ export default function QuestionBank() {
             </div>
 
             <form onSubmit={save} style={{ display: "grid", gap: "1.1em" }}>
-              {/* Subject, Parent Category, Child Subcategory */}
               <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1.3fr 1.3fr", gap: "0.9em" }}>
                 <div>
                   <label className="label">Subject</label>
@@ -547,7 +767,6 @@ export default function QuestionBank() {
                 />
               </div>
 
-              {/* Choices Grid */}
               {form.type === "MCQ" && (
                 <div style={{ background: "var(--paper-100)", padding: "1.2em", borderRadius: "var(--radius-md)", border: "1px solid var(--line)" }}>
                   <div style={{ fontWeight: 700, fontSize: "0.85rem", marginBottom: "0.8em", color: "var(--ink-700)" }}>
@@ -730,7 +949,6 @@ export default function QuestionBank() {
                             transition: "all 0.15s ease",
                           }}
                         >
-                          {/* Caret expander button */}
                           {hasChildren ? (
                             <button
                               onClick={(e) => toggleExpandParent(parent.id, e)}
@@ -752,7 +970,6 @@ export default function QuestionBank() {
                             <span style={{ width: "14px", display: "inline-block" }} />
                           )}
 
-                          {/* Parent Category Select Button */}
                           <button
                             onClick={() => setSelectedFilter({ type: "PARENT", id: parent.id, name: parent.name, parentId: null })}
                             style={{
